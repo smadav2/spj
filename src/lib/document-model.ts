@@ -1,6 +1,7 @@
 import { makeReceipt, type ReceiptContent } from './receipt-layout';
 import type { Block, Signer } from './blocks';
 import { decreeDocument, invitationDocument } from './decree';
+import { handoverDocument, inspectionDocument, orderDocument } from './procurement';
 import { CATEGORIES, FULL_MONTHS, categoryOf, dateLabel, documentChecks, documentTitle, itemsOf, lines, money, monthLabel, number, pembinaOf, terbilang, text, transactionStatus, STATUS_LABELS, workersOf, type Attachment, type DocTemplate, type DocumentKind, type SchoolProfile, type Transaction } from './domain';
 const prettyDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) ? dateLabel(value) : value;
 export type { Block, Signer } from './blocks';
@@ -74,7 +75,7 @@ export function transactionDocuments(t: Transaction, school: SchoolProfile, temp
       pages.push({ title: doc.title, letterhead: true, showTitle: false, blocks: doc.blocks });
       continue;
     }
-    const withReceiptNumber = !['transport', 'coachAttendance', 'participantsAttendance'].includes(kind);
+    const withReceiptNumber = !['transport', 'coachAttendance', 'participantsAttendance', 'order', 'handover', 'inspection'].includes(kind);
     if (withReceiptNumber) blocks.push(p(`Nomor kuitansi: ${t.number}`));
     if (customText) blocks.push(p(customText));
     switch (kind) {
@@ -110,7 +111,7 @@ export function transactionDocuments(t: Transaction, school: SchoolProfile, temp
       case 'coachAttendance': {
         const coaches = pembinaOf(t);
         const dates = lines(d('meetingDates')).filter(value => value !== '—');
-        blocks.push(p(`BULAN: ${monthLabel(t)}`, true), table(['No.', 'Tanggal Kegiatan', 'Nama Pembina / Pelatih', 'Tanda Tangan'], (dates.length ? dates : ['—']).map((date, i) => [String(i + 1), prettyDate(date), coaches.length ? coaches.join(', ') : d('recipient'), '']), [0.07, 0.22, 0.42, 0.29]), sign([{ role: 'Pembina / pelatih', name: coaches[0] || d('recipient') }]));
+        blocks.push(p(`BULAN: ${monthLabel(t)}`, true), table(['No.', 'Tanggal Kegiatan', 'Nama Pembina / Pelatih', 'Tanda Tangan'], (dates.length ? dates : ['—']).map((date, i) => [String(i + 1), prettyDate(date), coaches.length ? coaches.join(', ') : d('recipient'), '']), [0.07, 0.22, 0.42, 0.29]), sign([schoolSigners[0]]));
         break;
       }
       case 'participantsAttendance': {
@@ -125,13 +126,13 @@ export function transactionDocuments(t: Transaction, school: SchoolProfile, temp
         break;
       }
       case 'order':
-        blocks.push(p(`Kepada: ${d('recipient')}`), p(`Alamat penyedia: ${d('providerAddress')}`), p(`Tanggal pembelian: ${dateLabel(t.date)}`), p(`Nomor transaksi penyedia: ${d('providerNumber')}`), p(`Jenis belanja: ${d('purchaseType')}`), itemTable(), p(`Total pesanan: ${money(t.amount)}`, true), sign(schoolSigners.slice(0, 2)));
+        blocks.push(...orderDocument(t, school, assets));
         break;
       case 'handover':
-        blocks.push(p(`Tanggal: ${dateLabel(t.date)}`), table([], [['Pihak yang menyerahkan', d('handedBy')], ['Pihak yang menerima', d('receivedBy')], ['Penyedia', d('recipient')]], [0.38, 0.62]), itemTable(), p(`Kondisi / hasil serah terima: ${d('condition')}`), sign([{ role: 'Pihak yang menyerahkan', name: d('handedBy') }, { role: 'Pihak yang menerima', name: d('receivedBy') }]));
+        blocks.push(...handoverDocument(t, school, assets));
         break;
       case 'inspection':
-        blocks.push(p(`Tanggal pemeriksaan: ${dateLabel(text(t.data, 'inspectionDate') || t.date)}`), p(`Pemeriksa: ${d('inspectedBy')}`), p(`Penyedia: ${d('recipient')}`), itemTable(), p('Hasil pemeriksaan teknis', true), p(d('inspectionResult')), sign([{ role: 'Pemeriksa', name: d('inspectedBy') }, schoolSigners[0]]));
+        blocks.push(...inspectionDocument(t, school, assets));
         break;
       case 'wages':
         blocks.push(p(`Pekerjaan: ${t.title}`), p(`Lokasi: ${d('place')} | Periode: ${d('period')}`), table(['No.', 'Nama pekerja / pekerjaan', 'Hari', 'Upah / hari', 'Total', 'Tanda tangan'], workers.map((w, i) => [String(i + 1), `${w.name}\n${w.job}`, String(w.days), money(w.wage), money(w.days * w.wage), '']), [0.06, 0.28, 0.08, 0.2, 0.2, 0.18]), p(`Total upah: ${money(t.amount)}`, true), sign(schoolSigners.slice(0, 2)));

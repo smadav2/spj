@@ -1,5 +1,5 @@
 import { createHash, createHmac } from 'node:crypto';
-import { del as blobSdkDelete, get as blobSdkGet, put as blobSdkPut } from '@vercel/blob';
+import { BlobAccessError, BlobStoreNotFoundError, BlobStoreSuspendedError, del as blobSdkDelete, get as blobSdkGet, put as blobSdkPut } from '@vercel/blob';
 import { db } from '@/db';
 import { attachments } from '@/db/schema';
 import { eq } from 'drizzle-orm';
@@ -39,9 +39,24 @@ export function storageInfo(): StorageInfo {
       ...(process.env.VERCEL_OIDC_TOKEN && !store ? ['BLOB_STORE_ID'] : []),
     ],
   };
-  if (provider === 'vercel-blob') return { provider, label: 'Vercel Blob', configured: true, hint: `Lampiran disimpan di Vercel Blob via ${oidc ? 'Vercel OIDC' : 'read-write token'}; database hanya menyimpan metadata.`, authMode: oidc ? 'Vercel OIDC' : 'read-write token', storeIdVariable: store?.name, missing };
+  if (provider === 'vercel-blob') {
+    const ready = blobReady();
+    return { provider, label: 'Vercel Blob', configured: ready, hint: ready
+      ? `Lampiran disimpan di Vercel Blob via ${oidc ? 'Vercel OIDC' : 'read-write token'}; database hanya menyimpan metadata.`
+      : 'Koneksi Vercel Blob terdeteksi, tetapi kredensialnya belum terbaca oleh aplikasi pada runtime ini. Pastikan Production/Preview terpilih pada koneksi store, lalu Redeploy.', authMode: oidc ? 'Vercel OIDC' : 'read-write token', storeIdVariable: store?.name, missing };
+  }
   if (provider === 's3') return { provider, label: 'S3 / Cloudflare R2', configured: true, hint: `Bucket "${process.env.S3_BUCKET}" dipakai untuk foto & PDF.`, publicBase: process.env.S3_PUBLIC_URL, missing };
   return { provider: 'db', label: 'PostgreSQL (bawaan)', configured: false, hint: 'Belum ada object storage. Lampiran disimpan di database dalam bentuk terkompresi.', missing };
+}
+
+/** Mengubah error SDK Vercel Blob menjadi pesan yang dapat ditindaklanjuli. */
+export function describeStorageError(error: unknown): string {
+  if (error instanceof BlobAccessError) return 'Vercel Blob menolak kredensial aplikasi. Koneksi store belum menyertakan kredensial yang terbaca pada runtime: buka Blob store → Projects → ⋯ → Update Project Connection, pastikan Production/Preview terpilih (centang Add a read-write token env var bila ingin token statis), lalu Redeploy.';
+  if (error instanceof BlobStoreNotFoundError) return 'Store Vercel Blob tidak ditemukan untuk kredensial ini. Pastikan project Vercel yang terhubung dengan store adalah project yang sama dan environment-nya benar.';
+  if (error instanceof BlobStoreSuspendedError) return 'Store Vercel Blob sedang ditangguhkan. Buka tab Storage di Vercel untuk mengaktifkannya kembali.';
+  const message = (error as Error)?.message || '';
+  if (/BLOB_READ_WRITE_TOKEN|BlobAccessError/i.test(message)) return 'Vercel Blob menolak kredensial. Pastikan VERCEL_OIDC_TOKEN + BLOB_STORE_ID (atau BLOB_READ_WRITE_TOKEN) tersedia pada runtime dan deployment sudah diperbarui.';
+  return message || 'Object storage menolak permintaan.';
 }
 
 /** Uji tulis–baca–hapus satu berkas kecil untuk memastikan kredensial storage benar. */
@@ -77,17 +92,21 @@ function blobSdkOptions() {
   return { access: blobAccess(), ...(hasOcid && store ? { storeId: store.value } : {}) } as const;
 }
 async function blobPut(key: string, bytes: Buffer, contentType: string): Promise<{ url?: string }> {
-  const blob = await blobSdkPut(key, bytes, { ...blobSdkOptions(), contentType, addRandomSuffix: false, allowOverwrite: true });
-  return { url: blob.downloadUrl || blob.url };
+  try {
+    const blob = await blobSdkPut(key, bytes, { ...blobSdkOptions(), contentType, addRandomSuffix: false, allowOverwrite: true });
+    return { url: blob.downloadUrl || blob.url };
+  } catch (error) { throw new Error(describeStorageError(error)); }
 }
 async function blobGet(key: string): Promise<Response> {
-  const result = await blobSdkGet(key, { ...blobSdkOptions(), useCache: false });
-  if (!result) return new Response('not found', { status: 404 });
-  if (result.statusCode !== 200 || !result.stream) return new Response('not found', { status: 404 });
+  let result;
+  try { result = await blobSdkGet(key, { ...blobSdkOptions(), useCache: false }); }
+  catch (error) { throw new Error(describeStorageError(error)); }
+  if (!result || result.statusCode !== 200 || !result.stream) return new Response('not found', { status: 404 });
   return new Response(result.stream, { headers: new Headers(result.headers as unknown as HeadersInit) });
 }
 async function blobDelete(key: string) {
-  await blobSdkDelete(key, blobSdkOptions());
+  try { await blobSdkDelete(key, blobSdkOptions()); }
+  catch (error) { console.error('Gagal menghapus objek di Vercel Blob', describeStorageError(error)); }
 }
 
 // ---------------- S3 / R2 (SigV4) ----------------

@@ -43,6 +43,7 @@ export default function StoragePanel({ notify, ensureAuth }: { notify: (message:
   }
 
   const objectActive = stats ? stats.storage.provider !== 'db' : false;
+  const blobWithoutCredentials = objectActive && stats?.storage.provider === 'vercel-blob' && stats.storage.configured === false;
   return <section className="card storage-panel">
     <div className="storage-head">
       <span className={`storage-badge ${objectActive ? 'ok' : 'warn'}`}><Icon name={objectActive ? 'Cloud' : 'DatabaseBackup'} size={20} /></span>
@@ -57,6 +58,7 @@ export default function StoragePanel({ notify, ensureAuth }: { notify: (message:
       <div><small>Isi berkas di database (Neon)</small><strong>{stats ? (stats.dbBytes ? size(stats.dbBytes) : '0 KB') : '—'}</strong><span>{stats ? (stats.inDatabase ? `${stats.inDatabase} berkas base64` : 'Tidak menyimpan isi berkas') : ''}</span></div>
       <div><small>Di object storage</small><strong>{stats ? `${stats.inObjectStorage} berkas` : '—'}</strong><span>Tidak memakai kuota tabel</span></div>
     </div>
+    {blobWithoutCredentials && <Notice tone="warning"><b>Vercel Blob terhubung, tetapi kredensialnya belum terbaca.</b> Koneksi Blob pada project Anda memakai OIDC (VERCEL_OIDC_TOKEN + ID store), bukan token statis — jadi pastikan kode terbaru (SDK resmi) sudah di-deploy, koneksi store mencakup environment Production/Preview, lalu Redeploy. Setelah itu klik <b>Muat Ulang Status</b> dan <b>Uji Koneksi Storage</b>.</Notice>}
     {!objectActive && <div className="storage-guide">
       <div className="storage-guide-head"><Icon name="CircleHelp" size={16} /><div><b>Object storage belum aktif — ini bukan error.</b><p>Aplikasi tetap berjalan; foto masih disimpan di database Neon sehingga kuota lebih cepat terpakai. Aktifkan “gudang berkas” gratis berikut agar foto/PDF dipindahkan otomatis.</p></div></div>
       <div className="storage-guide-tabs"><button type="button" className={guide === 'r2' ? 'active' : ''} onClick={() => setGuide('r2')}>Cloudflare R2 (gratis 10 GB, direkomendasikan)</button><button type="button" className={guide === 'blob' ? 'active' : ''} onClick={() => setGuide('blob')}>Vercel Blob (paling mudah)</button></div>

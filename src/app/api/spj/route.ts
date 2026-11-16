@@ -6,7 +6,7 @@ import { PDFDocument } from 'pdf-lib';
 import { db } from '@/db';
 import { ensureSchema } from '@/db/ensure-schema';
 import { RECEIPT_NUMBER_FIELDS } from '@/lib/receipt-layout';
-import { buildObjectKey, deleteObject, getObject, hydrateFiles, putObject, storageInfo, storageProvider, storageSelfTest } from '@/lib/object-storage';
+import { buildObjectKey, deleteObject, describeStorageError, getObject, hydrateFiles, putObject, storageInfo, storageProvider, storageSelfTest } from '@/lib/object-storage';
 import { administrators, attachments, auditLog, documentTemplates, receiptCounters, schoolSettings, transactions } from '@/db/schema';
 import { AppError, checkLoginRate, checkOrigin, currentUser, endSession, hasAdministrator, hashPassword, requireUser, startSession, verifyPassword } from '@/lib/auth';
 import { DOCUMENT_NAMES, EMPTY_SCHOOL, buildReceiptNumber, categoryOf, transactionStatus, type DocTemplate } from '@/lib/domain';
@@ -63,7 +63,7 @@ async function handle(request: NextRequest) {
         if (file.content) return new Response(new Uint8Array(Buffer.from(file.content, 'base64')), { headers: fileHeaders });
         if (file.storageKey && file.storageProvider !== 'db') {
           try { return new Response(new Uint8Array(await getObject(file.storageProvider as 's3' | 'vercel-blob', file.storageKey)), { headers: fileHeaders }); }
-          catch (error) { throw new AppError(`Berkas ada di object storage tetapi gagal diambil. ${(error as Error).message}`, 502); }
+          catch (error) { throw new AppError(`Berkas ada di object storage tetapi gagal diambil. ${describeStorageError(error)}`, 502); }
         }
         throw new AppError('Isi berkas tidak ditemukan.', 404);
       }
@@ -105,7 +105,7 @@ async function handle(request: NextRequest) {
         let stored = { provider: 'db' as const, key: '', url: undefined as string | undefined };
         if (storageProvider() !== 'db') {
           try { const object = await putObject(key, buffer, mime); stored = { provider: object.provider as 'db', key: object.key, url: object.url }; }
-          catch (error) { throw new AppError(`Gagal menyimpan lampiran ke object storage. ${(error as Error).message}`, 502); }
+          catch (error) { throw new AppError(`Gagal menyimpan lampiran ke object storage. ${describeStorageError(error)}`, 502); }
         }
         prepared.push({ fileId, values: { transactionId: id || null, kind, name: file.name.replace(/[\r\n]/g, '').slice(0, 200), mime, size: buffer.length, content: stored.provider === 'db' ? buffer.toString('base64') : '', storageProvider: stored.provider, storageKey: stored.provider === 'db' ? null : stored.key, url: stored.url ?? null } });
       }
@@ -237,7 +237,9 @@ async function handle(request: NextRequest) {
           } catch { /* biarkan berkas asli bila gagal dioptimalkan */ }
         }
         if (target !== 'db') {
-          const stored = await putObject(buildObjectKey({ transactionId: row.transactionId, kind: row.kind, name: row.name }, row.id), bytes, row.mime);
+          let stored;
+          try { stored = await putObject(buildObjectKey({ transactionId: row.transactionId, kind: row.kind, name: row.name }, row.id), bytes, row.mime); }
+          catch (error) { throw new AppError(`Pemindahan berhenti pada berkas "${row.name}": ${describeStorageError(error)}`, 502); }
           await db.update(attachments).set({ content: '', storageProvider: stored.provider, storageKey: stored.key, url: stored.url ?? null, size: bytes.length }).where(eq(attachments.id, row.id));
           moved += 1;
         } else if (bytes.length < before) {

@@ -75,6 +75,13 @@ Buka **Template Dokumen → Kuitansi pembayaran** untuk mengatur kuitansi mendat
 - Pengaturan dan berkas latar tersimpan di PostgreSQL dan disertakan dalam backup/restore. Backup versi lama tetap didukung dengan nilai bawaan untuk pengaturan kuitansi baru.
 - Pengujian: `npx tsx scripts/receipt-check.ts` memeriksa PDF dan Word tiga mode/dua orientasi serta membukanya melalui LibreOffice. `node scripts/receipt-browser-check.mjs` hanya untuk server verifikasi terpisah pada port 3101, bukan database sekolah.
 
+## Dokumen pengadaan dan tanda tangan pelatih
+
+- **Daftar hadir pelatih Pramuka/Tahfidz** di bagian bawah ditandatangani **Kepala Sekolah**, termasuk NIP dan gambar tanda tangan yang diunggah pada identitas sekolah.
+- **Surat Pesanan** menampilkan penyedia, identitas pemesan, tabel Uraian–Volume–Satuan–Keterangan, dan tanda tangan kepala sekolah tanpa harga.
+- **Berita Acara Serah Terima Barang** memuat Pihak Pertama/Kedua, keadaan BAIK dan CUKUP, rincian harga, total, serta tanda tangan kepala sekolah dan bendahara.
+- **Berita Acara Pemeriksaan Teknis** memuat nomor/tanggal penetapan tim, ketua/sekretaris/anggota, Surat Pesanan terkait, tabel hasil pemeriksaan, kesimpulan yang dimasukkan pengguna, dan tiga kolom tanda tangan. Nomor SP, BAST, dan pemeriksaan dapat diisi pada transaksi; bila dikosongkan menggunakan pola B/007, B/008, dan B/009 dengan bulan Romawi/tahun transaksi. Isi SK tim dan hasil pemeriksaan tidak dibuat otomatis oleh aplikasi.
+
 ## Catatan build (Vercel)
 
 Koneksi PostgreSQL bersifat **lazy** (`src/db/index.ts` memakai `getPool()`/`getDb()`), sehingga `next build` tidak gagal meski `DATABASE_URL` belum diisi saat build. Variabel tetap wajib tersedia saat runtime; bila belum ada, `/api/health` mengembalikan `{"ok":false,"configured":false}` dan API memberi pesan langkah perbaikan. Tabel database dibuat otomatis pada permintaan pertama.

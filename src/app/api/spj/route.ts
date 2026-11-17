@@ -12,7 +12,9 @@ import { AppError, checkLoginRate, checkOrigin, currentUser, endSession, hasAdmi
 import { DOCUMENT_NAMES, EMPTY_SCHOOL, buildReceiptNumber, categoryOf, transactionStatus, type DocTemplate } from '@/lib/domain';
 import { finalizeTransaction, getSchool, getSchoolAssets, getTemplates, getTransaction, isRecord, listTransactions, removeTransaction, saveSchool, saveTransaction, validId, validateTransaction } from '@/lib/store';
 import { reportDocuments, transactionDocuments } from '@/lib/document-model';
-import { renderExcel, renderPDF, renderWord, type PrintOptions } from '@/lib/exports';
+import { renderExcel, renderPDF, renderTransferExcel, renderWord, type PrintOptions } from '@/lib/exports';
+import { rowsFromTransactions, transferDocuments } from '@/lib/transfer';
+import { dateLabel, type TransferRow } from '@/lib/domain';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 const json = (value: unknown, status = 200) => NextResponse.json(value, { status, headers: { 'Cache-Control': 'no-store' } });
@@ -80,7 +82,7 @@ async function handle(request: NextRequest) {
       if (replaceId && (!id || files.length !== 1)) throw new AppError('Penggantian lampiran memerlukan satu berkas dan transaksi yang valid.');
       let transaction = null;
       if (id) { transaction = await getTransaction(id); if (!(kind in DOCUMENT_NAMES)) throw new AppError('Jenis lampiran tidak valid.'); }
-      else if (!['logo', 'principalSignature', 'treasurerSignature', 'receiptBackground'].includes(kind)) throw new AppError('Jenis aset sekolah tidak valid.');
+      else if (!['logo', 'principalSignature', 'treasurerSignature', 'receiptBackground', 'principalIdCard', 'treasurerIdCard'].includes(kind)) throw new AppError('Jenis aset sekolah tidak valid.');
       const isAsset = !id;
       const prepared: { fileId: string; values: typeof attachments.$inferInsert }[] = [];
       for (const file of files) {
@@ -147,6 +149,46 @@ async function handle(request: NextRequest) {
         if (!path[2] && method === 'PUT') return json(await saveTransaction(await request.json(), id));
         if (!path[2] && method === 'DELETE') { await removeTransaction(id); return json({ success: true }); }
       }
+    }
+    if (path[0] === 'transfer' && (method === 'GET' || method === 'POST')) {
+      const params = request.nextUrl.searchParams;
+      const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+      const payload = isRecord(body) ? body : {};
+      const school = await getSchool();
+      const format = String(payload.format || params.get('format') || 'pdf');
+      if (!['pdf', 'docx', 'xlsx'].includes(format)) throw new AppError('Format ekspor tidak didukung.');
+      const scopeRaw = String(payload.scope || params.get('scope') || 'all');
+      const scope = (['all', 'letter', 'payroll', 'recap', 'ktp'].includes(scopeRaw) ? scopeRaw : 'all') as 'all' | 'letter' | 'payroll' | 'recap' | 'ktp';
+      const year = Number(payload.year || params.get('year') || school.year);
+      const month = Number(payload.month || params.get('month') || new Date().getMonth() + 1);
+      const date = String(payload.date || params.get('date') || `${year}-${String(month).padStart(2, '0')}-17`);
+      const letterNumber = String(payload.letterNumber || params.get('letterNumber') || '');
+      let rows: TransferRow[] = [];
+      if (Array.isArray(payload.rows)) {
+        rows = payload.rows.filter(isRecord).map(r => ({
+          name: String(r.name || '').trim().slice(0, 240),
+          accountNumber: String(r.accountNumber || '').replace(/[^0-9A-Za-z .-]/g, '').trim().slice(0, 60),
+          bank: String(r.bank || '').trim().slice(0, 80),
+          amount: Math.max(0, Math.round(Number(r.amount || 0))),
+          description: String(r.description || '').trim().slice(0, 300),
+        })).filter(r => r.name && r.amount > 0);
+      } else {
+        const idsParam = String(payload.ids || params.get('ids') || '').split(',').map(v => v.trim()).filter(Boolean);
+        let list = (await listTransactions()).filter(t => t.year === year && (!month || Number(t.date.slice(5, 7)) === month));
+        if (idsParam.length) list = list.filter(t => idsParam.includes(t.id));
+        const shortBank = school.bankName ? (school.bankName.toUpperCase().includes('JAWA TIMUR') ? 'BPD-JATIM' : school.bankName.slice(0, 18)) : 'BPD-JATIM';
+        rows = rowsFromTransactions(list, shortBank);
+      }
+      if (format === 'xlsx') {
+        return binary(await renderTransferExcel(rows, school, month, year, dateLabel(date)), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', `Payroll-Non-Tunai-${year}-${String(month).padStart(2, '0')}.xlsx`);
+      }
+      const assets = await getSchoolAssets(school);
+      const margin = Math.max(10, Math.min(40, Number(params.get('margin') || school.margin || 20)));
+      const options: PrintOptions = { orientation: scope === 'payroll' || scope === 'recap' ? 'landscape' : 'portrait', margin, origin: request.nextUrl.origin };
+      const documents = transferDocuments(school, assets, { letterNumber, date, month, year, rows, scope });
+      const fileLabel = `Pemindahbukuan-${year}-${String(month).padStart(2, '0')}-${scope}`;
+      if (format === 'docx') return binary(await renderWord(documents, school, assets, options), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', `${fileLabel}.docx`);
+      return binary(await renderPDF(documents, school, assets, options), 'application/pdf', `${fileLabel}.pdf`, params.get('download') !== '1');
     }
     if ((path[0] === 'export' || path[0] === 'report') && method === 'GET') {
       const params = request.nextUrl.searchParams; const school = await getSchool();
@@ -275,7 +317,7 @@ async function handle(request: NextRequest) {
       if (!Number.isFinite(school.margin) || school.margin < 10 || school.margin > 40 || !['portrait', 'landscape'].includes(school.orientation) || (school.npsn && !/^\d{8}$/.test(school.npsn))) throw new AppError('Pengaturan cetak atau NPSN pada backup tidak valid.');
       if (!['blue', 'plain', 'text-only'].includes(school.receiptStyle) || typeof school.receiptBackgroundHasLabels !== 'boolean') throw new AppError('Format kuitansi pada backup tidak valid.');
       for (const [key, rule] of Object.entries(RECEIPT_NUMBER_FIELDS)) { const value = school[key as keyof typeof RECEIPT_NUMBER_FIELDS]; if (!Number.isFinite(value) || value < rule.min || value > rule.max) throw new AppError(`${rule.label} pada backup tidak valid.`); }
-      for (const id of [school.logoId, school.principalSignatureId, school.treasurerSignatureId, school.receiptBackgroundId].filter(Boolean)) { validId(id); if (!fileRows.some(file => file.id === id && file.mime.startsWith('image/'))) throw new AppError('Aset sekolah pada backup tidak ditemukan.'); }
+      for (const id of [school.logoId, school.rightLogoId, school.principalSignatureId, school.treasurerSignatureId, school.receiptBackgroundId, school.principalIdCardId, school.treasurerIdCardId].filter(Boolean)) { validId(id); if (!fileRows.some(file => file.id === id && file.mime.startsWith('image/'))) throw new AppError('Aset sekolah pada backup tidak ditemukan.'); }
       for (const file of fileRows) {
         const bytes = Buffer.from(file.content, 'base64');
         const valid = file.mime === 'application/pdf' ? bytes.subarray(0, 5).toString() === '%PDF-' : file.mime === 'image/png' ? bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) : bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;

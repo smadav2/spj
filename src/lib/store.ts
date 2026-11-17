@@ -4,7 +4,7 @@ import { attachments, auditLog, documentTemplates, receiptCounters, schoolSettin
 import { AppError } from './auth';
 import { RECEIPT_NUMBER_FIELDS } from './receipt-layout';
 import { hydrateFiles } from './object-storage';
-import { CATEGORIES, EMPTY_SCHOOL, buildReceiptNumber, calculateAmount, categoryOf, documentChecks, missingSchool, type Attachment, type CategoryId, type Item, type SchoolProfile, type Transaction, type Worker } from './domain';
+import { CATEGORIES, EMPTY_SCHOOL, buildReceiptNumber, calculateAmount, categoryOf, documentChecks, missingSchool, type Attachment, type CategoryId, type Item, type SchoolProfile, type Transaction, type TransferRow, type Worker } from './domain';
 
 const fileColumns = { id: attachments.id, transactionId: attachments.transactionId, kind: attachments.kind, name: attachments.name, mime: attachments.mime, size: attachments.size, storageProvider: attachments.storageProvider, storageKey: attachments.storageKey, url: attachments.url, createdAt: attachments.createdAt };
 export const isRecord = (v: unknown): v is Record<string, unknown> => Boolean(v && typeof v === 'object' && !Array.isArray(v));
@@ -25,7 +25,7 @@ export async function getTransaction(id: string, withContent = false): Promise<T
   return { ...row, category: row.category as CategoryId, amount: Number(row.amount), createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString(), files: files.map(f => ({ ...f, createdAt: f.createdAt.toISOString() })) };
 }
 export async function getSchoolAssets(school: SchoolProfile): Promise<Attachment[]> {
-  const ids = [...new Set([school.logoId, school.rightLogoId, school.principalSignatureId, school.treasurerSignatureId, school.receiptBackgroundId].filter(Boolean))];
+  const ids = [...new Set([school.logoId, school.rightLogoId, school.principalSignatureId, school.treasurerSignatureId, school.receiptBackgroundId, school.principalIdCardId, school.treasurerIdCardId].filter(Boolean))];
   const result: Attachment[] = [];
   const raw: (typeof attachments.$inferSelect)[] = [];
   for (const id of ids) { validId(id); const [file] = await db.select().from(attachments).where(eq(attachments.id, id)); if (file) raw.push(file); }
@@ -61,6 +61,13 @@ export function validateTransaction(input: unknown) {
     data.workers = rawData.workers.map(worker => {
       if (!isRecord(worker) || !String(worker.name || '').trim() || !Number.isFinite(Number(worker.days)) || Number(worker.days) <= 0 || !Number.isFinite(Number(worker.wage)) || Number(worker.wage) < 0 || !Number.isInteger(Number(worker.wage))) throw new AppError('Lengkapi nama, hari kerja, dan upah pada setiap pekerja.');
       return { name: String(worker.name).slice(0, 240), job: String(worker.job || '').slice(0, 240), days: Number(worker.days), wage: Number(worker.wage) } satisfies Worker;
+    });
+  }
+  if (Array.isArray(rawData.transferRows)) {
+    if (rawData.transferRows.length > 200) throw new AppError('Maksimal 200 baris pemindahbukuan.');
+    data.transferRows = rawData.transferRows.map(row => {
+      if (!isRecord(row) || !String(row.name || '').trim() || !Number.isFinite(Number(row.amount)) || Number(row.amount) <= 0 || !Number.isInteger(Number(row.amount))) throw new AppError('Lengkapi nama rekening dan nominal bulat positif pada setiap baris pemindahbukuan.');
+      return { name: String(row.name).trim().slice(0, 240), accountNumber: String(row.accountNumber || '').replace(/[^0-9A-Za-z .-]/g, '').trim().slice(0, 60), bank: String(row.bank || '').trim().slice(0, 80), amount: Number(row.amount), description: String(row.description || '').trim().slice(0, 300) } satisfies TransferRow;
     });
   }
   if (category === 'konsumsi' && (!Number.isFinite(Number(data.quantity)) || Number(data.quantity) <= 0 || !Number.isFinite(Number(data.unitPrice)) || Number(data.unitPrice) <= 0 || !Number.isInteger(Number(data.unitPrice)))) throw new AppError('Jumlah konsumsi dan harga satuan harus positif; harga berupa rupiah bulat.');
@@ -126,6 +133,12 @@ export async function saveSchool(input: unknown) {
     validId(school.receiptBackgroundId);
     const [background] = await db.select({ mime: attachments.mime, kind: attachments.kind, transactionId: attachments.transactionId }).from(attachments).where(eq(attachments.id, school.receiptBackgroundId));
     if (!background || !background.mime.startsWith('image/') || background.kind !== 'receiptBackground' || background.transactionId) throw new AppError('Latar kuitansi tidak ditemukan. Unggah ulang gambar JPG atau PNG.');
+  }
+  for (const [id, kind, label] of [[school.principalIdCardId, 'principalIdCard', 'KTP kepala sekolah'], [school.treasurerIdCardId, 'treasurerIdCard', 'KTP bendahara']] as const) {
+    if (!id) continue;
+    validId(id);
+    const [card] = await db.select({ mime: attachments.mime, kind: attachments.kind, transactionId: attachments.transactionId }).from(attachments).where(eq(attachments.id, id));
+    if (!card || !card.mime.startsWith('image/') || card.kind !== kind || card.transactionId) throw new AppError(`Foto ${label} tidak ditemukan. Unggah ulang gambar JPG atau PNG.`);
   }
   if (!Number.isInteger(school.year) || school.year < 2000 || school.year > 2100) throw new AppError('Tahun anggaran tidak valid.');
   if (!Number.isFinite(school.margin) || school.margin < 10 || school.margin > 40) throw new AppError('Margin harus 10–40 mm.');

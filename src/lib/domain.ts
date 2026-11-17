@@ -17,10 +17,12 @@ export interface SchoolProfile {
   principalSignatureId: string; treasurerSignatureId: string; numberFormat: string; letterhead: string; margin: number; orientation: 'portrait' | 'landscape';
   receiptStyle: 'blue' | 'plain' | 'text-only'; receiptBackgroundId: string; receiptBackgroundHasLabels: boolean;
   receiptWidth: number; receiptHeight: number; receiptFontSize: number; receiptOffsetX: number; receiptOffsetY: number; receiptTreasurerLabel: string;
+  principalAddress: string; treasurerAddress: string; bankName: string; bankBranch: string; bankAddress: string; bankAccountNumber: string; bankAccountName: string; principalIdCardId: string; treasurerIdCardId: string; transferNumberFormat: string;
 }
-export const EMPTY_SCHOOL: SchoolProfile = { name: '', npsn: '', address: '', village: '', district: '', regency: '', province: '', postalCode: '', principal: '', principalNip: '', treasurer: '', treasurerNip: '', operator: '', year: new Date().getFullYear(), principalSignatureId: '', treasurerSignatureId: '', numberFormat: 'BNU{nomor}/SDN.SIDO 2/{bulan_romawi}/{tahun}', letterhead: '', logoId: '', rightLogoId: '', government: '', department: '', website: '', email: '', letterheadStyle: 'two-logos', margin: 20, orientation: 'portrait', receiptStyle: 'blue', receiptBackgroundId: '', receiptBackgroundHasLabels: true, receiptWidth: 190, receiptHeight: 100, receiptFontSize: 12, receiptOffsetX: 0, receiptOffsetY: 0, receiptTreasurerLabel: 'Bendahara / Guru' };
+export const EMPTY_SCHOOL: SchoolProfile = { name: '', npsn: '', address: '', village: '', district: '', regency: '', province: '', postalCode: '', principal: '', principalNip: '', treasurer: '', treasurerNip: '', operator: '', year: new Date().getFullYear(), principalSignatureId: '', treasurerSignatureId: '', numberFormat: 'BNU{nomor}/SDN.SIDO 2/{bulan_romawi}/{tahun}', letterhead: '', logoId: '', rightLogoId: '', government: '', department: '', website: '', email: '', letterheadStyle: 'two-logos', margin: 20, orientation: 'portrait', receiptStyle: 'blue', receiptBackgroundId: '', receiptBackgroundHasLabels: true, receiptWidth: 190, receiptHeight: 100, receiptFontSize: 12, receiptOffsetX: 0, receiptOffsetY: 0, receiptTreasurerLabel: 'Bendahara / Guru', principalAddress: '', treasurerAddress: '', bankName: '', bankBranch: '', bankAddress: '', bankAccountNumber: '', bankAccountName: '', principalIdCardId: '', treasurerIdCardId: '', transferNumberFormat: '900/39/426.101.411.2.4/{tahun}' };
 export interface Item { name: string; specification: string; quantity: number; unit: string; price: number }
 export interface Worker { name: string; job: string; days: number; wage: number }
+export interface TransferRow { name: string; accountNumber: string; bank: string; amount: number; description: string }
 export interface Attachment { id: string; transactionId: string | null; kind: string; name: string; mime: string; size: number; createdAt: string; content?: string }
 export interface Transaction { id: string; number: string; category: CategoryId; title: string; date: string; year: number; amount: number; data: Record<string, unknown>; finalized: boolean; createdAt: string; updatedAt: string; files: Attachment[] }
 export interface DocTemplate { key: string; title: string; content: string }
@@ -37,6 +39,7 @@ export const lines = (value: string) => value.split(/[\n;]+/).map(v => v.trim())
 export const categoryOf = (id: string) => CATEGORIES.find(c => c.id === id) || CATEGORIES[0];
 export function itemsOf(t: Transaction): Item[] { return Array.isArray(t.data.items) ? t.data.items as Item[] : []; }
 export function workersOf(t: Transaction): Worker[] { return Array.isArray(t.data.workers) ? t.data.workers as Worker[] : []; }
+export function transferRowsOf(t: Transaction): TransferRow[] { return Array.isArray(t.data.transferRows) ? t.data.transferRows as TransferRow[] : []; }
 // Daftar pembina/pelatih dipakai SK & daftar penerimaan transport.
 // Data lama (belum punya field "coaches") otomatis memakai "participants"/penerima.
 export function pembinaOf(t: Transaction): string[] {

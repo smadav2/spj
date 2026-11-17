@@ -5,7 +5,7 @@ import { handoverDocument, inspectionDocument, orderDocument } from './procureme
 import { CATEGORIES, FULL_MONTHS, categoryOf, dateLabel, documentChecks, documentTitle, itemsOf, lines, money, monthLabel, number, pembinaOf, terbilang, text, transactionStatus, STATUS_LABELS, workersOf, type Attachment, type DocTemplate, type DocumentKind, type SchoolProfile, type Transaction } from './domain';
 const prettyDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) ? dateLabel(value) : value;
 export type { Block, Signer } from './blocks';
-export interface DocumentPage { title: string; letterhead: boolean; blocks: Block[]; receipt?: ReceiptContent; showTitle?: boolean }
+export interface DocumentPage { title: string; letterhead: boolean; blocks: Block[]; receipt?: ReceiptContent; showTitle?: boolean; orientation?: 'portrait' | 'landscape' }
 const p = (value: string, bold = false): Block => ({ type: 'text', value, bold });
 const table = (headers: string[], rows: string[][], widths?: number[]): Block => ({ type: 'table', headers, rows, widths });
 export function transactionDocuments(t: Transaction, school: SchoolProfile, templates: DocTemplate[], assets: Attachment[], scope = 'all'): DocumentPage[] {

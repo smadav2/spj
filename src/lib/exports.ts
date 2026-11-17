@@ -10,9 +10,10 @@ const mm = (n: number) => n * 72 / 25.4;
 const twips = (n: number) => Math.round(n * 1440 / 25.4);
 const content = (f: Attachment) => Buffer.from(f.content || '', 'base64');
 function widthsOf(count: number, widths?: number[]) { const usable = widths?.length === count ? widths : Array(count).fill(1 / count) as number[]; const total = usable.reduce((a, b) => a + b, 0); return usable.map(v => v / total); }
+const safePdfText = (value: string) => value.replace(/→/g, '->').replace(/[“”]/g, '"').replace(/[‘’]/g, "'").replace(/[^\t\n\r\x20-\x7E\xA0-\xFF–—•…]/g, ' ');
 function wrap(value: string, font: PDFFont, size: number, width: number) {
   const result: string[] = [];
-  for (const paragraph of value.replace(/\r/g, '').replace(/\t/g, '    ').split('\n')) {
+  for (const paragraph of safePdfText(value).replace(/\r/g, '').replace(/\t/g, '    ').split('\n')) {
     let line = '';
     for (const word of paragraph.split(' ')) {
       const candidate = line ? line + ' ' + word : word;
@@ -30,16 +31,24 @@ export async function renderPDF(documents: DocumentPage[], school: SchoolProfile
   const regular = await pdf.embedFont(StandardFonts.TimesRoman);
   const bold = await pdf.embedFont(StandardFonts.TimesRomanBold);
   const galleryQueue: Promise<unknown>[] = [];
-  const [w, h] = options.orientation === 'landscape' ? [mm(330), mm(215)] : [mm(215), mm(330)];
-  const margin = mm(options.margin), usable = w - margin * 2;
+  const margin = mm(options.margin);
+  let w = options.orientation === 'landscape' ? mm(330) : mm(215);
+  let h = options.orientation === 'landscape' ? mm(215) : mm(330);
+  let usable = w - margin * 2;
   let page: PDFPage; let y = h - margin;
-  const newPage = () => { page = pdf.addPage([w, h]); y = h - margin; };
+  const newPage = (pageOrientation?: 'portrait' | 'landscape') => {
+    const orient = pageOrientation || (w > h ? 'landscape' : 'portrait');
+    [w, h] = orient === 'landscape' ? [mm(330), mm(215)] : [mm(215), mm(330)];
+    usable = w - margin * 2;
+    page = pdf.addPage([w, h]); y = h - margin;
+  };
   const ensure = (height: number) => { if (y - height < margin + 12) newPage(); };
   const write = (value: string, size = 12, isBold = false, center = false) => {
     const font = isBold ? bold : regular;
+    const step = size * (size < 12 ? 1.32 : 1.45);
     const rows = wrap(value, font, size, usable);
-    for (const row of rows) { ensure(size * 1.45); page.drawText(row, { x: center ? (w - font.widthOfTextAtSize(row, size)) / 2 : margin, y: y - size, size, font }); y -= size * 1.45; }
-    y -= 8;
+    for (const row of rows) { ensure(step); page.drawText(row, { x: center ? (w - font.widthOfTextAtSize(row, size)) / 2 : margin, y: y - size, size, font }); y -= step; }
+    y -= size < 12 ? 5 : 8;
   };
   const imageEmbed = async (f: Attachment) => f.mime === 'image/png' ? pdf.embedPng(content(f)) : pdf.embedJpg(content(f));
   const drawTable = (block: Extract<Block, { type: 'table' }>) => {
@@ -57,7 +66,7 @@ export async function renderPDF(documents: DocumentPage[], school: SchoolProfile
         if (availableLines < 2) { newPage(); if (!isHeader && block.headers.length) drawRow(block.headers, true); availableLines = Math.floor((y - margin - 24) / 16); }
         if (totalLines - start <= Math.floor((h - 2 * margin - 60) / lineH) && totalLines - start > availableLines) { newPage(); if (!isHeader && block.headers.length) drawRow(block.headers, true); availableLines = Math.floor((y - margin - 24) / 16); }
         const take = Math.min(totalLines - start, Math.max(1, availableLines));
-        const rowHeight = Math.max(fontSize + 16, take * lineH + fontSize);
+        const rowHeight = Math.max(fontSize > 10.5 ? fontSize + 16 : fontSize + 9, take * lineH + (fontSize > 10.5 ? fontSize : 6));
         let x = margin;
         for (let i = 0; i < count; i++) {
           page.drawRectangle({ x, y: y - rowHeight, width: colWidths[i], height: rowHeight, borderColor: rgb(0.25, 0.25, 0.25), borderWidth: 0.5, ...(isHeader ? { color: rgb(0.95, 0.95, 0.95) } : {}) });
@@ -72,7 +81,7 @@ export async function renderPDF(documents: DocumentPage[], school: SchoolProfile
     y -= 16;
   };
   for (const document of documents) {
-    newPage();
+    newPage(document.orientation || options.orientation);
     if (document.receipt) {
       const receiptHeight = await drawReceiptPDF(pdf, page!, document.receipt, school, assets, margin, y, usable, regular, bold);
       y -= receiptHeight + 18;
@@ -115,7 +124,7 @@ export async function renderPDF(documents: DocumentPage[], school: SchoolProfile
           page!.drawText(':', { x: margin + labelW - mm(1), y: base - 12, size: 12, font: regular });
           rows.forEach((row, i) => page!.drawText(row, { x: valueX, y: base - 12 - i * 16, size: 12, font: regular }));
           if (index === 0 && block.right) page!.drawText(block.right, { x: w - margin - regular.widthOfTextAtSize(block.right, 12), y: base - 12, size: 12, font: regular });
-          y = base - Math.max(17, rows.length * 16) - 6;
+          y = base - Math.max(15, rows.length * 15) - 3;
         });
         y -= 8;
       }
@@ -157,16 +166,18 @@ export async function renderPDF(documents: DocumentPage[], school: SchoolProfile
         const cellWidth = usable / block.signers.length;
         const nameLines = block.signers.map(s => wrap(s.name, bold, 12, cellWidth - 16));
         const maxNames = Math.max(...nameLines.map(n => n.length));
-        const required = 164 + maxNames * 16;
+        const compact = w > h || !block.date;
+        const nameYOffset = compact ? 86 : 112;
+        const required = (compact ? 118 : 158) + maxNames * 15;
         ensure(required);
-        if (block.date) { const dateRows = wrap(block.date, regular, 12, usable); for (const row of dateRows) { page!.drawText(row, { x: w - margin - regular.widthOfTextAtSize(row, 12), y: y - 12, size: 12, font: regular }); y -= 17; } }
-        y -= 15;
+        if (block.date) { const dateRows = wrap(block.date, regular, 12, usable); for (const row of dateRows) { page!.drawText(row, { x: w - margin - regular.widthOfTextAtSize(row, 12), y: y - 12, size: 12, font: regular }); y -= 16; } }
+        y -= compact ? 8 : 14;
         for (let i = 0; i < block.signers.length; i++) {
           const signer = block.signers[i]; const center = margin + cellWidth * (i + 0.5);
-          wrap(signer.role, regular, 12, cellWidth - 14).forEach((row, n) => page!.drawText(row, { x: center - regular.widthOfTextAtSize(row, 12) / 2, y: y - 12 - n * 16, size: 12, font: regular }));
-          if (signer.image) { const image = await imageEmbed(signer.image); const dim = image.scaleToFit(cellWidth - 35, 50); page!.drawImage(image, { x: center - dim.width / 2, y: y - 95, ...dim }); }
-          nameLines[i].forEach((row, n) => page!.drawText(row, { x: center - bold.widthOfTextAtSize(row, 12) / 2, y: y - 112 - n * 16, size: 12, font: bold }));
-          if (signer.nip) { const nip = `NIP. ${signer.nip}`; page!.drawText(nip, { x: center - regular.widthOfTextAtSize(nip, 10) / 2, y: y - 116 - nameLines[i].length * 16, size: 10, font: regular }); }
+          wrap(signer.role, regular, 12, cellWidth - 14).forEach((row, n) => page!.drawText(row, { x: center - regular.widthOfTextAtSize(row, 12) / 2, y: y - 12 - n * 15, size: 12, font: regular }));
+          if (signer.image) { const image = await imageEmbed(signer.image); const dim = image.scaleToFit(cellWidth - 35, compact ? 42 : 50); page!.drawImage(image, { x: center - dim.width / 2, y: y - (compact ? 72 : 95), ...dim }); }
+          nameLines[i].forEach((row, n) => page!.drawText(row, { x: center - bold.widthOfTextAtSize(row, 12) / 2, y: y - nameYOffset - n * 15, size: 12, font: bold }));
+          if (signer.nip) { const nip = `NIP. ${signer.nip}`; page!.drawText(nip, { x: center - regular.widthOfTextAtSize(nip, 10) / 2, y: y - (nameYOffset + 4) - nameLines[i].length * 15, size: 10, font: regular }); }
         }
         y -= required;
       }
@@ -217,19 +228,19 @@ export async function renderPDF(documents: DocumentPage[], school: SchoolProfile
     }
   }
   await Promise.all(galleryQueue);
-  pdf.getPages().forEach((p, i) => { const label = `Halaman ${i + 1} dari ${pdf.getPageCount()}`; p.drawText(label, { x: (w - regular.widthOfTextAtSize(label, 10)) / 2, y: Math.max(12, margin / 2), size: 10, font: regular }); });
+  pdf.getPages().forEach((p, i) => { const label = `Halaman ${i + 1} dari ${pdf.getPageCount()}`; p.drawText(label, { x: (p.getWidth() - regular.widthOfTextAtSize(label, 10)) / 2, y: Math.max(12, margin / 2), size: 10, font: regular }); });
   return pdf.save();
 }
 const noBorder = { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' };
 const borders = { top: noBorder, bottom: noBorder, left: noBorder, right: noBorder };
 export async function renderWord(documents: DocumentPage[], school: SchoolProfile, assets: Attachment[], options: PrintOptions) {
-  const landscape = options.orientation === 'landscape';
-  const width = twips(landscape ? 330 : 215), height = twips(landscape ? 215 : 330);
-  const margin = twips(options.margin); const available = width - margin * 2;
+  const margin = twips(options.margin);
   const para = (text: string, bold = false, center = false) => new Paragraph({ alignment: center ? AlignmentType.CENTER : AlignmentType.LEFT, spacing: { after: 160, line: 280 }, children: text.split('\n').flatMap((line, i) => [new TextRun({ text: line, bold, ...(i > 0 ? { break: 1 } : {}) })]) });
   const imageRun = async (file: Attachment, maxWidth = 550, maxHeight = 820) => { const data = content(file); const meta = await sharp(data).metadata(); const scale = Math.min(maxWidth / (meta.width || maxWidth), maxHeight / (meta.height || maxHeight), 1); return new ImageRun({ data, type: file.mime === 'image/png' ? 'png' : 'jpg', transformation: { width: Math.round((meta.width || maxWidth) * scale), height: Math.round((meta.height || maxHeight) * scale) } }); };
   const sections = [];
   for (const page of documents) {
+    const landscape = (page.orientation || options.orientation) === 'landscape';
+    const width = twips(landscape ? 330 : 215), height = twips(landscape ? 215 : 330), available = width - margin * 2;
     const children: (Paragraph | Table)[] = [];
     if (page.receipt) children.push(...await receiptWordParagraphs(page.receipt, school, assets, options.margin, available / 1440 * 25.4));
     if (page.letterhead) {
@@ -341,5 +352,56 @@ export async function renderExcel(list: Transaction[], school: SchoolProfile, ye
   sheet('Dokumen belum lengkap', ['Nomor kuitansi', 'Tanggal', 'Kegiatan', 'Kategori', 'Nominal (Rp)', 'Kelengkapan'], txRows(list.filter(t => transactionStatus(t, school) !== 'complete'))).getColumn(5).numFmt = '#,##0';
   const types = [...new Set(list.map(t => String(t.data.purchaseType || categoryOf(t.category).short)))];
   sheet('Jenis belanja', ['Jenis belanja', 'Jumlah transaksi', 'Total (Rp)'], types.map(type => { const ts = list.filter(t => String(t.data.purchaseType || categoryOf(t.category).short) === type); return [type, ts.length, ts.reduce((s, t) => s + t.amount, 0)]; })).getColumn(3).numFmt = '#,##0';
+  return workbook.xlsx.writeBuffer();
+}
+
+export async function renderTransferExcel(rows: { name: string; accountNumber: string; bank: string; amount: number; description: string }[], school: SchoolProfile, month: number, year: number, date: string) {
+  const workbook = new ExcelJS.Workbook(); workbook.creator = 'SPJ BOSP Sekolah';
+  const monthName = FULL_MONTHS[Math.max(0, Math.min(11, (month || 1) - 1))].toUpperCase();
+  const s = workbook.addWorksheet(`Non Tunai ${monthName}`);
+  s.pageSetup = { orientation: 'landscape', paperSize: 9 };
+  const title1 = s.addRow([`DATA REKAP PEMBAYARAN NON TUNAI BULAN ${monthName} ${year}`]);
+  const title2 = s.addRow([`BANTUAN OPERASIONAL SATUAN PENDIDIKAN (BOSP) ${year}`]);
+  const title3 = s.addRow([(school.name || 'NAMA SEKOLAH BELUM DIISI').toUpperCase()]);
+  for (const r of [title1, title2, title3]) { r.font = { bold: true, size: 12 }; r.alignment = { horizontal: 'center' }; }
+  s.mergeCells('A1:F1'); s.mergeCells('A2:F2'); s.mergeCells('A3:F3');
+  s.addRow([]);
+  const header = s.addRow(['NO', 'URAIAN', 'NO REKENING', 'NAMA REKENING', 'BANK', 'JUMLAH']);
+  header.font = { bold: true };
+  header.eachCell(cell => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } };
+    cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+  });
+  const totalRows = Math.max(10, rows.length);
+  const defaultBank = school.bankName ? (school.bankName.toUpperCase().includes('JAWA TIMUR') ? 'BPD-JATIM' : school.bankName.slice(0, 18)) : 'BPD-JATIM';
+  let sum = 0;
+  for (let i = 0; i < totalRows; i++) {
+    const item = rows[i];
+    if (item) sum += item.amount;
+    const row = s.addRow(item ? [i + 1, item.description, item.accountNumber || '', item.name, item.bank || defaultBank, item.amount] : [i + 1, '', '', '', '', '']);
+    row.getCell(3).numFmt = '@';
+    if (item) row.getCell(6).numFmt = '#,##0.00';
+    row.eachCell({ includeEmpty: true }, (cell, col) => {
+      if (col <= 6) cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+    });
+  }
+  const totalRow = s.addRow(['', '', '', '', '', sum]);
+  totalRow.font = { bold: true };
+  totalRow.getCell(6).numFmt = '#,##0.00';
+  totalRow.eachCell({ includeEmpty: true }, (cell, col) => {
+    if (col <= 6) cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+  });
+  s.addRow([]);
+  const place = school.district || school.regency || school.village || '';
+  const signTop = s.addRow(['Mengetahui,', '', '', '', `${place ? `${place}, ` : ''}${date}`, '']);
+  const signRole = s.addRow(['Kepala Sekolah', '', '', '', 'Bendahara', '']);
+  s.addRow([]); s.addRow([]); s.addRow([]);
+  const signName = s.addRow([school.principal || '—', '', '', '', school.treasurer || '—', '']);
+  signName.font = { bold: true, underline: true };
+  const signNip = s.addRow([school.principalNip ? `NIP. ${school.principalNip}` : '', '', '', '', school.treasurerNip ? `NIP. ${school.treasurerNip}` : '', '']);
+  void signTop; void signRole; void signNip;
+  const widths = [6, 38, 18, 26, 14, 18];
+  widths.forEach((w, idx) => { s.getColumn(idx + 1).width = w; });
   return workbook.xlsx.writeBuffer();
 }

@@ -5,8 +5,9 @@ export type Block =
   | { type: 'table'; headers: string[]; rows: string[][]; widths?: number[]; size?: number; boldLastRow?: boolean }
   | { type: 'image'; file: Attachment; size?: 'full' | 'medium' | 'large' }
   | { type: 'gallery'; files: Attachment[]; columns: number; rows: number; startNumber?: number }
-  | { type: 'signatures'; signers: Signer[]; date: string }
-  | { type: 'kv'; rows: [string, string][]; right?: string; labelWidth?: number }
+  | { type: 'signatures'; signers: Signer[]; date: string; widthFraction?: number }
+  | { type: 'payroll'; headers: string[]; rows: string[][]; totalRow: string[]; widths?: number[]; underlineCols?: number[] }
+  | { type: 'kv'; rows: [string, string][]; right?: string; labelWidth?: number; size?: number }
   | { type: 'diktum'; rows: { label: string; value: string }[] }
   | { type: 'tembusan'; items: string[] }
   | { type: 'decree-sign'; placeLine: string; dateLine: string; role: string; schoolLine: string; name: string; nip: string; image?: Attachment };

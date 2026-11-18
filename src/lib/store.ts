@@ -1,5 +1,5 @@
 import { db } from '@/db';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, ne, sql } from 'drizzle-orm';
 import { attachments, auditLog, documentTemplates, receiptCounters, schoolSettings, transactions } from '@/db/schema';
 import { AppError } from './auth';
 import { RECEIPT_NUMBER_FIELDS } from './receipt-layout';
@@ -12,7 +12,7 @@ export function validId(id: string) { if (!/^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a
 export async function getSchool(): Promise<SchoolProfile> { const [row] = await db.select().from(schoolSettings).where(eq(schoolSettings.id, 1)); return { ...EMPTY_SCHOOL, ...row?.data }; }
 export async function getTemplates() { return db.select({ key: documentTemplates.key, title: documentTemplates.title, content: documentTemplates.content }).from(documentTemplates); }
 export async function listTransactions(withContent = false): Promise<Transaction[]> {
-  const [rows, raw] = await Promise.all([db.select().from(transactions).orderBy(desc(transactions.date), desc(transactions.createdAt)), withContent ? db.select().from(attachments) : db.select(fileColumns).from(attachments)]);
+  const [rows, raw] = await Promise.all([db.select().from(transactions).orderBy(asc(transactions.date), asc(transactions.createdAt)), withContent ? db.select().from(attachments) : db.select(fileColumns).from(attachments)]);
   const files = withContent ? await hydrateFiles(raw as (typeof raw[number])[]) : raw;
   return rows.map(row => ({ ...row, category: row.category as CategoryId, amount: Number(row.amount), createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString(), files: files.filter(f => f.transactionId === row.id).map(f => ({ ...f, createdAt: f.createdAt.toISOString() })) }));
 }
@@ -78,18 +78,31 @@ export function validateTransaction(input: unknown) {
 export async function saveTransaction(input: unknown, id?: string) {
   const values = validateTransaction(input);
   const school = await getSchool();
+  const customNumber = isRecord(input) && typeof input.number === 'string' ? input.number.trim().slice(0, 200) : '';
+  if (customNumber && customNumber.length < 3) throw new AppError('Nomor kuitansi minimal 3 karakter.');
   if (id) validId(id);
   const result = await db.transaction(async tx => {
     if (id) {
       const [before] = await tx.select().from(transactions).where(eq(transactions.id, id)).for('update');
       if (!before) throw new AppError('Transaksi tidak ditemukan.', 404);
       if (before.year !== values.year) throw new AppError('Tahun transaksi yang sudah bernomor tidak dapat diubah. Buat transaksi baru pada tahun yang sesuai.');
-      const [updated] = await tx.update(transactions).set({ ...values, finalized: false, updatedAt: new Date() }).where(eq(transactions.id, id)).returning();
+      let number = before.number;
+      if (customNumber && customNumber !== before.number) {
+        const [clash] = await tx.select({ id: transactions.id }).from(transactions).where(and(eq(transactions.number, customNumber), ne(transactions.id, id)));
+        if (clash) throw new AppError(`Nomor kuitansi "${customNumber}" sudah dipakai transaksi lain. Gunakan nomor berbeda.`);
+        number = customNumber;
+      }
+      const [updated] = await tx.update(transactions).set({ ...values, number, finalized: false, updatedAt: new Date() }).where(eq(transactions.id, id)).returning();
       await tx.insert(auditLog).values({ transactionId: id, action: 'Transaksi diperbarui', details: { before, after: updated } });
       return updated;
     }
     const [counter] = await tx.insert(receiptCounters).values({ year: values.year, value: 1 }).onConflictDoUpdate({ target: receiptCounters.year, set: { value: sql`${receiptCounters.value} + 1` } }).returning();
-    const number = buildReceiptNumber(school.numberFormat || EMPTY_SCHOOL.numberFormat, counter.value, values.date, values.category, values.year);
+    let number = buildReceiptNumber(school.numberFormat || EMPTY_SCHOOL.numberFormat, counter.value, values.date, values.category, values.year);
+    if (customNumber) {
+      const [clash] = await tx.select({ id: transactions.id }).from(transactions).where(eq(transactions.number, customNumber));
+      if (clash) throw new AppError(`Nomor kuitansi "${customNumber}" sudah dipakai transaksi lain. Gunakan nomor berbeda.`);
+      number = customNumber;
+    }
     const [created] = await tx.insert(transactions).values({ ...values, number }).returning();
     await tx.insert(auditLog).values({ transactionId: created.id, action: 'Transaksi dibuat', details: { number, title: created.title } });
     return created;

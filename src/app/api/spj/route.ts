@@ -1,20 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import sharp from 'sharp';
 import { PDFDocument } from 'pdf-lib';
 import { db } from '@/db';
 import { ensureSchema } from '@/db/ensure-schema';
 import { RECEIPT_NUMBER_FIELDS } from '@/lib/receipt-layout';
 import { buildObjectKey, deleteObject, describeStorageError, getObject, hydrateFiles, putObject, storageInfo, storageProvider, storageSelfTest } from '@/lib/object-storage';
-import { administrators, attachments, auditLog, documentTemplates, receiptCounters, schoolSettings, transactions } from '@/db/schema';
+import { administrators, attachments, auditLog, documentTemplates, receiptCounters, schoolSettings, transactions, transferBatches } from '@/db/schema';
 import { AppError, checkLoginRate, checkOrigin, currentUser, endSession, hasAdministrator, hashPassword, requireUser, startSession, verifyPassword } from '@/lib/auth';
 import { DOCUMENT_NAMES, EMPTY_SCHOOL, buildReceiptNumber, categoryOf, transactionStatus, type DocTemplate } from '@/lib/domain';
 import { finalizeTransaction, getSchool, getSchoolAssets, getTemplates, getTransaction, isRecord, listTransactions, removeTransaction, saveSchool, saveTransaction, validId, validateTransaction } from '@/lib/store';
 import { reportDocuments, transactionDocuments } from '@/lib/document-model';
 import { renderExcel, renderPDF, renderTransferExcel, renderWord, type PrintOptions } from '@/lib/exports';
-import { rowsFromTransactions, transferDocuments } from '@/lib/transfer';
+import { recapRows, transferDocuments, type TransferBatchLike, type TransferScope } from '@/lib/transfer';
 import { dateLabel, type TransferRow } from '@/lib/domain';
+import ExcelJS from 'exceljs';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 const json = (value: unknown, status = 200) => NextResponse.json(value, { status, headers: { 'Cache-Control': 'no-store' } });
@@ -144,11 +145,117 @@ async function handle(request: NextRequest) {
         const id = validId(path[1]);
         if (path[2] === 'history' && method === 'GET') return json(await db.select().from(auditLog).where(eq(auditLog.transactionId, id)).orderBy(desc(auditLog.createdAt)));
         if (path[2] === 'finalize' && method === 'POST') return json(await finalizeTransaction(id));
-        if (path[2] === 'duplicate' && method === 'POST') { const original = await getTransaction(id); return json(await saveTransaction({ ...original, title: `${original.title} (salinan)`, finalized: false }), 201); }
+        if (path[2] === 'duplicate' && method === 'POST') { const original = await getTransaction(id); const { number: _ignored, id: _originalId, createdAt: _created, updatedAt: _updated, files: _files, ...rest } = original; void _ignored; void _originalId; void _created; void _updated; void _files; return json(await saveTransaction({ ...rest, title: `${original.title} (salinan)`, finalized: false }), 201); }
         if (!path[2] && method === 'GET') return json(await getTransaction(id));
         if (!path[2] && method === 'PUT') return json(await saveTransaction(await request.json(), id));
         if (!path[2] && method === 'DELETE') { await removeTransaction(id); return json({ success: true }); }
       }
+    }
+    if (path[0] === 'transfer' && path[1] === 'batches') {
+      const school = await getSchool();
+      const normalizeRows = (input: unknown): TransferRow[] => (Array.isArray(input) ? input : []).filter(isRecord).map(row => ({
+        name: String(row.name || '').trim().slice(0, 240),
+        accountNumber: String(row.accountNumber || '').replace(/[^0-9A-Za-z .-]/g, '').trim().slice(0, 60),
+        bank: String(row.bank || '').trim().slice(0, 80),
+        amount: Math.max(0, Math.round(Number(row.amount || 0))),
+        description: String(row.description || '').trim().slice(0, 300),
+      })).filter(row => row.name && row.amount > 0);
+      const normalizeBatch = (input: Record<string, unknown>) => {
+        const letterDate = String(input.letterDate || '');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(letterDate)) throw new AppError('Tanggal surat pemindahbukuan wajib diisi dengan benar.');
+        const rows = normalizeRows(input.rows);
+        if (!rows.length) throw new AppError('Isi minimal satu baris rekening penerima dengan nominal lebih dari 0.');
+        if (rows.length > 300) throw new AppError('Maksimal 300 baris rekening per pemindahbukuan.');
+        return {
+          title: String(input.title || `Pemindahbukuan ${letterDate}`).trim().slice(0, 240),
+          letterNumber: String(input.letterNumber || '').trim().slice(0, 120),
+          letterDate,
+          month: Number(letterDate.slice(5, 7)),
+          year: Number(letterDate.slice(0, 4)),
+          bankName: String(input.bankName ?? school.bankName ?? '').trim().slice(0, 200),
+          bankBranch: String(input.bankBranch ?? school.bankBranch ?? '').trim().slice(0, 200),
+          bankAddress: String(input.bankAddress ?? school.bankAddress ?? '').trim().slice(0, 300),
+          giroNumber: String(input.giroNumber ?? school.bankAccountNumber ?? '').trim().slice(0, 80),
+          giroName: String(input.giroName ?? school.bankAccountName ?? '').trim().slice(0, 200),
+          rows,
+        };
+      };
+      if (!path[2] && method === 'GET') {
+        const list = await db.select().from(transferBatches).orderBy(asc(transferBatches.letterDate), asc(transferBatches.createdAt));
+        return json(list.map(batch => ({ ...batch, createdAt: batch.createdAt.toISOString(), updatedAt: batch.updatedAt.toISOString() })));
+      }
+      if (!path[2] && method === 'POST') {
+        const input = await request.json();
+        if (!isRecord(input)) throw new AppError('Data pemindahbukuan tidak valid.');
+        const values = normalizeBatch(input);
+        const [created] = await db.insert(transferBatches).values(values).returning();
+        await db.insert(auditLog).values({ action: 'Pemindahbukuan dibuat', details: { title: created.title, rows: values.rows.length } });
+        return json({ ...created, createdAt: created.createdAt.toISOString(), updatedAt: created.updatedAt.toISOString() }, 201);
+      }
+      if (path[2] && method === 'PUT') {
+        const id = validId(path[2]);
+        const input = await request.json();
+        if (!isRecord(input)) throw new AppError('Data pemindahbukuan tidak valid.');
+        const values = normalizeBatch(input);
+        const [updated] = await db.update(transferBatches).set({ ...values, updatedAt: new Date() }).where(eq(transferBatches.id, id)).returning();
+        if (!updated) throw new AppError('Data pemindahbukuan tidak ditemukan.', 404);
+        await db.insert(auditLog).values({ action: 'Pemindahbukuan diperbarui', details: { title: updated.title, rows: values.rows.length } });
+        return json({ ...updated, createdAt: updated.createdAt.toISOString(), updatedAt: updated.updatedAt.toISOString() });
+      }
+      if (path[2] && method === 'DELETE') {
+        const id = validId(path[2]);
+        const [deleted] = await db.delete(transferBatches).where(eq(transferBatches.id, id)).returning();
+        if (!deleted) throw new AppError('Data pemindahbukuan tidak ditemukan.', 404);
+        await db.insert(auditLog).values({ action: 'Pemindahbukuan dihapus', details: { title: deleted.title } });
+        return json({ success: true });
+      }
+    }
+    if (route === 'transfer/template' && method === 'GET') {
+      const school = await getSchool();
+      const now = new Date();
+      const bytes = await renderTransferExcel([], school, now.getMonth() + 1, school.year, dateLabel(`${school.year}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`));
+      return binary(bytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', `Template-Rekap-Non-Tunai-${school.year}.xlsx`);
+    }
+    if (path[0] === 'transfer' && path[1] === 'parse' && method === 'POST') {
+      const form = await request.formData();
+      const file = form.get('file');
+      if (!(file instanceof File) || file.size === 0 || file.size > 10 * 1024 * 1024) throw new AppError('Unggah berkas Excel (.xlsx) maksimal 10 MB.');
+      const workbook = new ExcelJS.Workbook();
+      try { const bytes = Buffer.from(await file.arrayBuffer()); await workbook.xlsx.load(bytes as unknown as Parameters<typeof workbook.xlsx.load>[0]); } catch { throw new AppError('Berkas Excel tidak dapat dibaca. Gunakan format .xlsx dari template aplikasi.'); }
+      const sheet = workbook.worksheets[0];
+      if (!sheet) throw new AppError('Berkas Excel tidak memiliki lembar kerja.');
+      const rows: TransferRow[] = [];
+      let headerRowNumber = 0; let columns: Record<string, number> = {}; const titleLines: string[] = [];
+      sheet.eachRow((row, rowNumber) => {
+        const values = (row.values as unknown[]).slice(1).map(value => typeof value === 'string' ? value.trim() : value === null || value === undefined ? '' : String(value).trim());
+        const upper = values.map(value => String(value).toUpperCase());
+        if (!headerRowNumber && upper.some(value => value.includes('URAIAN')) && upper.some(value => value.includes('REKENING'))) {
+          headerRowNumber = rowNumber;
+          upper.forEach((value, idx) => {
+            if (value.includes('URAIAN')) columns.description = idx;
+            else if (value.includes('NAMA REKENING') || value === 'NAMA') columns.name = idx;
+            else if (value.includes('NO REKENING') || value.includes('NOMOR REKENING')) columns.accountNumber = idx;
+            else if (value.includes('BANK')) columns.bank = idx;
+            else if (value.includes('JUMLAH') || value.includes('NOMINAL')) columns.amount = idx;
+          });
+          return;
+        }
+        if (!headerRowNumber) { const line = values.filter(Boolean).join(' '); if (line) titleLines.push(line); return; }
+        const get = (key: keyof typeof columns) => columns[key] !== undefined ? values[columns[key]] : '';
+        const rawAmount = String(get('amount') || '').replace(/[^0-9,.-]/g, '');
+        const amount = Math.round(Number(rawAmount.replace(/\./g, '').replace(',', '.')) || 0);
+        const name = String(get('name') || '').trim();
+        const description = String(get('description') || '').trim();
+        if (!name && !description && !amount) return;
+        if (/^(JUMLAH|TOTAL)$/i.test(description) || /^(JUMLAH|TOTAL)$/i.test(name)) return;
+        rows.push({ name, accountNumber: String(get('accountNumber') || '').trim(), bank: String(get('bank') || '').trim(), amount, description });
+      });
+      if (!headerRowNumber) throw new AppError('Header tabel tidak terdeteksi. Pastikan ada kolom URAIAN, NO REKENING, NAMA REKENING, BANK, dan JUMLAH seperti template.');
+      const joinedTitle = titleLines.join(' ');
+      const monthMatch = /(JANUARI|FEBRUARI|MARET|APRIL|MEI|JUNI|JULI|AGUSTUS|SEPTEMBER|OKTORER|OKTOBER|NOVEMBER|DESEMBER)\s*(\d{4})/i.exec(joinedTitle);
+      const months = ['JANUARI', 'FEBRUARI', 'MARET', 'APRIL', 'MEI', 'JUNI', 'JULI', 'AGUSTUS', 'SEPTEMBER', 'OKTOBER', 'NOVEMBER', 'DESEMBER'];
+      const month = monthMatch ? months.indexOf(monthMatch[1].toUpperCase()) + 1 : new Date().getMonth() + 1;
+      return json({ rows: rows.filter(row => row.name || row.description).slice(0, 300), detected: { headerRow: headerRowNumber, month: month || undefined, year: monthMatch ? Number(monthMatch[2]) : undefined, columns: Object.keys(columns) }, title: joinedTitle.slice(0, 240) });
     }
     if (path[0] === 'transfer' && (method === 'GET' || method === 'POST')) {
       const params = request.nextUrl.searchParams;
@@ -158,36 +265,36 @@ async function handle(request: NextRequest) {
       const format = String(payload.format || params.get('format') || 'pdf');
       if (!['pdf', 'docx', 'xlsx'].includes(format)) throw new AppError('Format ekspor tidak didukung.');
       const scopeRaw = String(payload.scope || params.get('scope') || 'all');
-      const scope = (['all', 'letter', 'payroll', 'recap', 'ktp'].includes(scopeRaw) ? scopeRaw : 'all') as 'all' | 'letter' | 'payroll' | 'recap' | 'ktp';
-      const year = Number(payload.year || params.get('year') || school.year);
-      const month = Number(payload.month || params.get('month') || new Date().getMonth() + 1);
-      const date = String(payload.date || params.get('date') || `${year}-${String(month).padStart(2, '0')}-17`);
-      const letterNumber = String(payload.letterNumber || params.get('letterNumber') || '');
-      let rows: TransferRow[] = [];
-      if (Array.isArray(payload.rows)) {
-        rows = payload.rows.filter(isRecord).map(r => ({
-          name: String(r.name || '').trim().slice(0, 240),
-          accountNumber: String(r.accountNumber || '').replace(/[^0-9A-Za-z .-]/g, '').trim().slice(0, 60),
-          bank: String(r.bank || '').trim().slice(0, 80),
-          amount: Math.max(0, Math.round(Number(r.amount || 0))),
-          description: String(r.description || '').trim().slice(0, 300),
-        })).filter(r => r.name && r.amount > 0);
-      } else {
-        const idsParam = String(payload.ids || params.get('ids') || '').split(',').map(v => v.trim()).filter(Boolean);
-        let list = (await listTransactions()).filter(t => t.year === year && (!month || Number(t.date.slice(5, 7)) === month));
-        if (idsParam.length) list = list.filter(t => idsParam.includes(t.id));
-        const shortBank = school.bankName ? (school.bankName.toUpperCase().includes('JAWA TIMUR') ? 'BPD-JATIM' : school.bankName.slice(0, 18)) : 'BPD-JATIM';
-        rows = rowsFromTransactions(list, shortBank);
+      const scope = (['all', 'letter', 'payroll', 'ktp', 'recap'].includes(scopeRaw) ? scopeRaw : 'all') as TransferScope;
+      const batchId = String(payload.batchId || params.get('batchId') || '');
+      let batch: TransferBatchLike | null = null;
+      if (batchId) {
+        validId(batchId);
+        const [saved] = await db.select().from(transferBatches).where(eq(transferBatches.id, batchId));
+        if (!saved) throw new AppError('Data pemindahbukuan tidak ditemukan.', 404);
+        batch = { ...saved, rows: Array.isArray(saved.rows) ? saved.rows : [] } satisfies TransferBatchLike;
+      } else if (isRecord(payload.rows) || Array.isArray(payload.rows)) {
+        const rows: TransferRow[] = (payload.rows as unknown[]).filter(isRecord).map(row => ({ name: String(row.name || '').trim(), accountNumber: String(row.accountNumber || '').trim(), bank: String(row.bank || '').trim(), amount: Math.max(0, Math.round(Number(row.amount || 0))), description: String(row.description || '').trim() })).filter(row => row.name && row.amount > 0);
+        const letterDate = String(payload.letterDate || `${school.year}-${String(new Date().getMonth() + 1).padStart(2, '0')}-17`);
+        batch = { title: String(payload.title || 'Pemindahbukuan'), letterNumber: String(payload.letterNumber || ''), letterDate, month: Number(letterDate.slice(5, 7)), year: Number(letterDate.slice(0, 4)), bankName: String(payload.bankName || school.bankName || ''), bankBranch: String(payload.bankBranch || school.bankBranch || ''), bankAddress: String(payload.bankAddress || school.bankAddress || ''), giroNumber: String(payload.giroNumber || school.bankAccountNumber || ''), giroName: String(payload.giroName || school.bankAccountName || ''), rows };
       }
+      if (!batch) throw new AppError('Tidak ada data pemindahbukuan. Simpan pemindahbukuan terlebih dahulu.', 400);
+      const total = batch.rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+      if (total <= 0) throw new AppError('Total pemindahbukuan masih nol. Isi nominal pada baris rekening.', 400);
       if (format === 'xlsx') {
-        return binary(await renderTransferExcel(rows, school, month, year, dateLabel(date)), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', `Payroll-Non-Tunai-${year}-${String(month).padStart(2, '0')}.xlsx`);
+        return binary(await renderTransferExcel(batch.rows, school, batch.month, batch.year, dateLabel(batch.letterDate)), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', `Rekap-Non-Tunai-${batch.year}-${String(batch.month).padStart(2, '0')}.xlsx`);
+      }
+      if (scope === 'recap') {
+        const recap = recapRows(batch.rows, school, batch.month, batch.year);
+        void recap;
+        return json({ error: 'Rekap Non-Tunai hanya tersedia dalam format Excel (.xlsx). Pilih tombol Unduh Excel Rekap.' }, 400);
       }
       const assets = await getSchoolAssets(school);
       const margin = Math.max(10, Math.min(40, Number(params.get('margin') || school.margin || 20)));
-      const options: PrintOptions = { orientation: scope === 'payroll' || scope === 'recap' ? 'landscape' : 'portrait', margin, origin: request.nextUrl.origin };
-      const documents = transferDocuments(school, assets, { letterNumber, date, month, year, rows, scope });
-      const fileLabel = `Pemindahbukuan-${year}-${String(month).padStart(2, '0')}-${scope}`;
-      if (format === 'docx') return binary(await renderWord(documents, school, assets, options), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', `${fileLabel}.docx`);
+      const options: PrintOptions = { orientation: scope === 'payroll' ? 'landscape' : 'portrait', margin, origin: request.nextUrl.origin };
+      const documents = transferDocuments(school, assets, batch, scope);
+      const fileLabel = `Pemindahbukuan-${batch.year}-${String(batch.month).padStart(2, '0')}-${scope}`;
+      if (format === 'docx') return binary(await renderWord(documents, school, assets, { ...options, orientation: 'portrait' }), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', `${fileLabel}.docx`);
       return binary(await renderPDF(documents, school, assets, options), 'application/pdf', `${fileLabel}.pdf`, params.get('download') !== '1');
     }
     if ((path[0] === 'export' || path[0] === 'report') && method === 'GET') {

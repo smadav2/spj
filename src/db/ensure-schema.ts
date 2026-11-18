@@ -66,6 +66,22 @@ const STATEMENTS = [
     "data" jsonb NOT NULL,
     "updated_at" timestamp DEFAULT now() NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS "transfer_batches" (
+    "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    "title" text NOT NULL,
+    "letter_number" text NOT NULL DEFAULT '',
+    "letter_date" text NOT NULL,
+    "month" integer NOT NULL,
+    "year" integer NOT NULL,
+    "bank_name" text NOT NULL DEFAULT '',
+    "bank_branch" text NOT NULL DEFAULT '',
+    "bank_address" text NOT NULL DEFAULT '',
+    "giro_number" text NOT NULL DEFAULT '',
+    "giro_name" text NOT NULL DEFAULT '',
+    "rows" jsonb DEFAULT '[]'::jsonb NOT NULL,
+    "created_at" timestamp DEFAULT now() NOT NULL,
+    "updated_at" timestamp DEFAULT now() NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS "admin_sessions" (
     "token" text PRIMARY KEY NOT NULL,
     "user_id" uuid NOT NULL,

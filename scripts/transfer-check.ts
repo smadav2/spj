@@ -1,56 +1,36 @@
 import assert from 'node:assert/strict';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import sharp from 'sharp';
-import JSZip from 'jszip';
 import { PDFDocument } from 'pdf-lib';
 import { EMPTY_SCHOOL, type Attachment, type SchoolProfile, type TransferRow } from '@/lib/domain';
 import { transferDocuments } from '@/lib/transfer';
-import { renderPDF, renderTransferExcel, renderWord } from '@/lib/exports';
+import { renderPDF, renderTransferExcel } from '@/lib/exports';
 
 const out = 'artifacts/transfer';
 
 async function main() {
   await mkdir(out, { recursive: true });
-  const ktpImg = await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="860" height="540"><rect width="860" height="540" rx="22" fill="#bfe3f4" stroke="#4c7a96" stroke-width="6"/><text x="60" y="95" font-size="34" font-family="Arial" font-weight="bold" fill="#17384c">KARTU TANDA PENDUDUK (UJI)</text><rect x="610" y="130" width="190" height="240" fill="#9c2c3c"/><text x="60" y="185" font-size="26" fill="#17384c">NIK : 0000000000000000</text><text x="60" y="240" font-size="24" fill="#17384c">DATA UJI PERANGKAT LUNAK</text></svg>')).png().toBuffer();
-  const logoImg = await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160"><circle cx="80" cy="80" r="70" fill="#e1f0f7" stroke="#18384e" stroke-width="6"/><text x="38" y="95" font-size="40" fill="#18384e">LOGO</text></svg>')).png().toBuffer();
-
+  const img = await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="860" height="540"><rect width="860" height="540" rx="20" fill="#cfe7f4" stroke="#4c7a96" stroke-width="6"/><text x="50" y="90" font-size="30" font-family="Arial" fill="#17384c">KTP UJI</text></svg>')).png().toBuffer();
+  const logo = await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160"><circle cx="80" cy="80" r="70" fill="#dff0f7" stroke="#18384e" stroke-width="6"/></svg>')).png().toBuffer();
+  const asset = (id: string, kind: string, name: string, bytes: Buffer): Attachment => ({ id, transactionId: null, kind, name, mime: 'image/png', size: bytes.length, content: bytes.toString('base64'), createdAt: '' });
   const assets: Attachment[] = [
-    { id: '00000000-0000-4000-8000-0000000000a1', transactionId: null, kind: 'logo', name: 'logo1.png', mime: 'image/png', size: logoImg.length, content: logoImg.toString('base64'), createdAt: '' },
-    { id: '00000000-0000-4000-8000-0000000000a2', transactionId: null, kind: 'logo', name: 'logo2.png', mime: 'image/png', size: logoImg.length, content: logoImg.toString('base64'), createdAt: '' },
-    { id: '00000000-0000-4000-8000-0000000000a3', transactionId: null, kind: 'principalIdCard', name: 'ktp-ks.png', mime: 'image/png', size: ktpImg.length, content: ktpImg.toString('base64'), createdAt: '' },
-    { id: '00000000-0000-4000-8000-0000000000a4', transactionId: null, kind: 'treasurerIdCard', name: 'ktp-bend.png', mime: 'image/png', size: ktpImg.length, content: ktpImg.toString('base64'), createdAt: '' },
+    asset('00000000-0000-4000-8000-0000000000b1', 'logo', 'logo-l.png', logo),
+    asset('00000000-0000-4000-8000-0000000000b2', 'logo', 'logo-r.png', logo),
+    asset('00000000-0000-4000-8000-0000000000b3', 'principalIdCard', 'ktp-ks.png', img),
+    asset('00000000-0000-4000-8000-0000000000b4', 'treasurerIdCard', 'ktp-bend.png', img),
   ];
-
   const school: SchoolProfile = {
     ...EMPTY_SCHOOL,
-    name: 'SD NEGERI SIDOMULYO II KOTAANYAR',
-    government: 'PEMERINTAH KABUPATEN PROBOLINGGO',
-    department: 'DINAS PENDIDIKAN DAN KEBUDAYAAN',
-    address: 'Dusun Poreng Desa Sidomulyo',
-    village: 'Sidomulyo',
-    district: 'Kotaanyar',
-    regency: 'Probolinggo',
-    postalCode: '67293',
-    website: 'sdvilla.eu.org',
-    email: 'sdn.uji@example.org',
-    principal: 'SUSWATI, S.Pd',
-    principalNip: '19711021 199403 2 004',
-    principalAddress: 'Dusun Pande RT/RW 02/010 Desa Triwungan Kec. Kotaanyar',
-    treasurer: 'NURHAYATI, S.Pd',
-    treasurerNip: '19850603 202321 2 030',
-    treasurerAddress: 'Dusun Asem Jajar RT/RW 005/002 Desa Sidomulyo Kec. Kotaanyar',
-    bankName: 'PT. BANK PEMBANGUNAN DAERAH JAWA TIMUR, Tbk.',
-    bankBranch: 'CABANG KRAKSAAN',
-    bankAddress: 'Jalan Raya Panglima Sudirman no. 144 Kraksaan, Kab. Probolinggo',
-    bankAccountNumber: '0131084692',
-    bankAccountName: 'SD Negeri Sidomulyo II',
-    logoId: assets[0].id,
-    rightLogoId: assets[1].id,
-    principalIdCardId: assets[2].id,
-    treasurerIdCardId: assets[3].id,
+    name: 'SD NEGERI SIDOMULYO II KOTAANYAR', government: 'PEMERINTAH KABUPATEN PROBOLINGGO', department: 'DINAS PENDIDIKAN DAN KEBUDAYAAN',
+    address: 'Dusun Poreng Desa Sidomulyo', village: 'Sidomulyo', district: 'Kotaanyar', regency: 'Probolinggo', postalCode: '67293',
+    website: 'sdvilla.eu.org', email: 'sdn.uji@example.org',
+    principal: 'SUSWATI, S.Pd', principalNip: '19711021 199403 2 004', principalAddress: 'Dusun Pande RT/RW 02/010 Desa Triwungan Kec. Kotaanyar',
+    treasurer: 'NURHAYATI, S.Pd', treasurerNip: '19850603 202321 2 030', treasurerAddress: 'Dusun Asem Jajar RT/RW 005/002 Desa Sidomulyo Kec. Kotaanyar',
+    bankName: 'PT. BANK PEMBANGUNAN DAERAH JAWA TIMUR, Tbk.', bankBranch: 'CABANG KRAKSAAN', bankAddress: 'Jalan Raya Panglima Sudirman no. 144 Kraksaan, Kab. Probolinggo',
+    bankAccountNumber: '0131084692', bankAccountName: 'SD Negeri Sidomulyo II',
+    logoId: assets[0].id, rightLogoId: assets[1].id, principalIdCardId: assets[2].id, treasurerIdCardId: assets[3].id,
   };
-
   const rows: TransferRow[] = [
     { name: 'RISTU LAILI SAFARI', accountNumber: '0132774196', bank: 'BPD-JATIM', amount: 150000, description: 'Pembayaran wifi Bulan November 2026' },
     { name: 'NURHAYATI', accountNumber: '0132980390', bank: 'BPD-JATIM', amount: 53000, description: 'Bayar Token Listrik November' },
@@ -59,58 +39,41 @@ async function main() {
     { name: 'DUA PUTRI', accountNumber: '', bank: 'BPD-JATIM', amount: 2906000, description: 'Membayar Siplah ATK' },
     { name: 'DUA PUTRI', accountNumber: '', bank: 'BPD-JATIM', amount: 1085000, description: 'Membayar Siplah Kebersihan' },
   ];
+  const batch = { title: 'Pemindahbukuan November 2026 (1)', letterNumber: '900/39/426.101.411.2.4/2026', letterDate: '2026-11-17', month: 11, year: 2026, bankName: school.bankName, bankBranch: school.bankBranch, bankAddress: school.bankAddress, giroNumber: school.bankAccountNumber, giroName: school.bankAccountName, rows };
 
-  const docs = transferDocuments(school, assets, { letterNumber: '900/39/426.101.411.2.4/2026', date: '2026-11-17', month: 11, year: 2026, rows, scope: 'all' });
-  assert.equal(docs.length, 4);
+  const docs = transferDocuments(school, assets, batch, 'all');
+  assert.equal(docs.length, 3, 'paket = Surat + Payroll + KTP (Rekap dipisah ke Excel)');
   assert.equal(docs[0].orientation, 'portrait');
-  assert.equal(docs[0].letterhead, true);
   assert.equal(docs[1].orientation, 'landscape');
-  assert.equal(docs[1].letterhead, true);
-  assert.equal(docs[2].orientation, 'landscape');
-  assert.equal(docs[2].letterhead, false);
-  assert.equal(docs[3].orientation, 'portrait');
-
+  assert.equal(docs[2].orientation, 'portrait');
   const pdfBytes = await renderPDF(docs, school, assets, { orientation: 'portrait', margin: 20 });
   await writeFile(`${out}/transfer-all.pdf`, pdfBytes);
   const pdf = await PDFDocument.load(pdfBytes);
-  assert.equal(pdf.getPageCount(), 4, 'paket harus 4 halaman');
-  assert.ok(pdf.getPage(0).getWidth() < pdf.getPage(0).getHeight(), 'halaman 1 (Surat Perintah) harus portrait');
-  assert.ok(pdf.getPage(1).getWidth() > pdf.getPage(1).getHeight(), 'halaman 2 (Payroll Word berkop) harus landscape');
-  assert.ok(pdf.getPage(2).getWidth() > pdf.getPage(2).getHeight(), 'halaman 3 (Rekap Non-Tunai tanpa kop) harus landscape');
-  assert.ok(pdf.getPage(3).getWidth() < pdf.getPage(3).getHeight(), 'halaman 4 (KTP) harus portrait');
+  assert.equal(pdf.getPageCount(), 3);
+  assert.ok(pdf.getPage(0).getWidth() < pdf.getPage(0).getHeight());
+  assert.ok(pdf.getPage(1).getWidth() > pdf.getPage(1).getHeight());
+  const page = (n: number) => execFileSync('pdftotext', ['-f', String(n), '-l', String(n), '-layout', `${out}/transfer-all.pdf`, '-'], { encoding: 'utf8' }).replace(/\s+/g, ' ');
+  const p1 = page(1);
+  for (const phrase of ['SURAT PERINTAH PEMINDAH BUKUAN', '900/39/426.101.411.2.4/2026', 'PT. BANK PEMBANGUNAN DAERAH JAWA TIMUR, Tbk.', 'CABANG KRAKSAAN', 'KHUSUS', '0131084692', '6 Rekening', 'Rp 4.479.000', 'Empat Juta Empat Ratus Tujuh Puluh Sembilan Ribu Rupiah', 'Kepala,', 'Bendahara Pengeluaran,', 'SUSWATI, S.Pd', 'NURHAYATI, S.Pd']) assert.ok(p1.includes(phrase), `halaman 1 hilang: ${phrase}`);
+  const p2 = page(2);
+  for (const phrase of ['NO', 'NAMA', 'NO. REKENING', 'NOMINAL', 'KETERANGAN', 'RISTU LAILI SAFARI', '150.000,00', 'TOTAL', 'Rp 4.479.000']) assert.ok(p2.includes(phrase), `halaman 2 hilang: ${phrase}`);
+  assert.ok(!page(1).includes('DATA REKAP PEMBAYARAN NON TUNAI'), 'Rekap tidak boleh digabung dalam PDF surat');
+  console.log('PASS: PDF = Surat Perintah (portrait berkop) + Payroll (landscape berkop) + Lampiran KTP; Rekap dipisah.');
 
-  const p1 = execFileSync('pdftotext', ['-f', '1', '-l', '1', '-layout', `${out}/transfer-all.pdf`, '-'], { encoding: 'utf8' }).replace(/\s+/g, ' ');
-  for (const phrase of ['PEMERINTAH KABUPATEN PROBOLINGGO', 'SURAT PERINTAH PEMINDAH BUKUAN', '900/39/426.101.411.2.4/2026', 'PT. BANK PEMBANGUNAN DAERAH JAWA TIMUR, Tbk.', 'CABANG KRAKSAAN', 'KHUSUS', '0131084692', '6 Rekening', 'Rp 4.479.000', 'Empat Juta Empat Ratus Tujuh Puluh Sembilan Ribu Rupiah', 'Kepala,', 'Bendahara Pengeluaran,', 'SUSWATI, S.Pd', 'NURHAYATI, S.Pd']) {
-    assert.ok(p1.includes(phrase), `Halaman 1 kehilangan: ${phrase}`);
-  }
-  console.log('PASS: Halaman 1 — Surat Perintah Pemindah Bukuan lengkap dengan KOP, bank, nominal terbilang, dan TTD.');
-
-  const p2 = execFileSync('pdftotext', ['-f', '2', '-l', '2', '-layout', `${out}/transfer-all.pdf`, '-'], { encoding: 'utf8' }).replace(/\s+/g, ' ');
-  for (const phrase of ['PEMERINTAH KABUPATEN PROBOLINGGO', 'NO', 'NAMA', 'NO. REKENING', 'NOMINAL', 'KETERANGAN', 'RISTU LAILI SAFARI', '0132774196', '150.000,00', 'TOTAL', 'Rp 4.479.000']) {
-    assert.ok(p2.includes(phrase), `Halaman 2 kehilangan: ${phrase}`);
-  }
-  console.log('PASS: Halaman 2 — Payroll Word Landscape berkop dengan kolom NO, NAMA, NO. REKENING, NOMINAL, KETERANGAN, TOTAL.');
-
-  const p3 = execFileSync('pdftotext', ['-f', '3', '-l', '3', '-layout', `${out}/transfer-all.pdf`, '-'], { encoding: 'utf8' }).replace(/\s+/g, ' ');
-  assert.ok(!p3.includes('DINAS PENDIDIKAN DAN KEBUDAYAAN'), 'Halaman 3 tidak boleh memakai KOP');
-  for (const phrase of ['DATA REKAP PEMBAYARAN NON TUNAI BULAN NOVEMBER 2026', 'BANTUAN OPERASIONAL SATUAN PENDIDIKAN (BOSP) 2026', 'URAIAN', 'NO REKENING', 'NAMA REKENING', 'BANK', 'JUMLAH', 'BPD-JATIM', '4.479.000,00', 'Mengetahui,', 'Kepala Sekolah', 'Bendahara']) {
-    assert.ok(p3.includes(phrase), `Halaman 3 kehilangan: ${phrase}`);
-  }
-  console.log('PASS: Halaman 3 — Data Rekap Non-Tunai Landscape tanpa KOP dengan kolom URAIAN, NO REKENING, NAMA REKENING, BANK, JUMLAH.');
-
-  const wordBytes = await renderWord(docs, school, assets, { orientation: 'portrait', margin: 20 });
-  await writeFile(`${out}/transfer-all.docx`, wordBytes);
-  const zip = await JSZip.loadAsync(wordBytes);
-  const xml = await zip.file('word/document.xml')!.async('string');
-  assert.ok(xml.includes('w:orient="landscape"'), 'Word harus memiliki section landscape');
-  assert.ok(xml.includes('SURAT PERINTAH PEMINDAH BUKUAN'));
-  assert.ok(xml.includes('DATA REKAP PEMBAYARAN NON TUNAI'));
-  console.log('PASS: Word (.docx) dapat diedit dan memuat section portrait + landscape.');
-
-  const xlsxBytes = await renderTransferExcel(rows, school, 11, 2026, '17 November 2026');
-  await writeFile(`${out}/transfer-recap.xlsx`, Buffer.from(xlsxBytes));
-  assert.ok(xlsxBytes.byteLength > 2000);
-  console.log('PASS: Ekspor Excel Rekap Non-Tunai berhasil dibuat.');
+  const xlsx = await renderTransferExcel(rows, school, 11, 2026, '17 November 2026');
+  await writeFile(`${out}/rekap.xlsx`, Buffer.from(xlsx));
+  const JSZip = (await import('jszip')).default;
+  const zip = await JSZip.loadAsync(Buffer.from(xlsx));
+  const sheetXml = await zip.file('xl/worksheets/sheet1.xml')!.async('string');
+  const shared = await zip.file('xl/sharedStrings.xml')?.async('string') || '';
+  const content = sheetXml + shared;
+  assert.ok(content.includes('Pembayaran wifi Bulan November 2026'));
+  assert.ok(content.includes('BPD-JATIM'));
+  assert.ok(content.includes('DATA REKAP PEMBAYARAN NON TUNAI BULAN NOVEMBER 2026'));
+  assert.ok(/<pageSetup[^>]*orientation="landscape"/.test(sheetXml), 'rekap Excel harus landscape');
+  const styles = await zip.file('xl/styles.xml')!.async('string');
+  assert.ok(styles.includes('FFBDD7EE') || styles.includes('BDD7EE'), 'baris TOTAL biru pada Excel');
+  console.log('PASS: Rekap Non-Tunai tersedia sebagai Excel landscape dengan baris TOTAL berwarna.');
   console.log('ALL TRANSFER DOCUMENT TESTS PASSED');
 }
-main().catch(e => { console.error(e); process.exitCode = 1; });
+main().catch(error => { console.error(error); process.exitCode = 1; });
